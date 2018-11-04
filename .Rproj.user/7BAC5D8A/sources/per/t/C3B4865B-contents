@@ -1,0 +1,1260 @@
+---
+title: "CURD Demo"
+author: "Aditya Kothari, Ramasubramaniam Sundararajan"
+date: "`r Sys.Date()`"
+output: prettydoc::html_pretty
+vignette: >
+  %\VignetteIndexEntry{Introduction to CURD}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+This document demoes the algorithm.
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 12,
+  fig.height = 12
+)
+```
+
+```{r RunParameters, echo = FALSE, message = F, warning = F}
+
+# CLEAR THE WORKSPACE
+rm(list = ls())
+set.seed(1)
+# gc()
+
+library(data.table)
+
+library(CURD)
+library(randomForest)
+library(rpart)
+library(cluster)
+library(clue)
+
+library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+library(scales)
+
+library(DT)
+
+theme_set(theme_bw(12))
+
+# After running the model, should there also be some summaries created?
+bDoAnalysis = T
+
+# Should the results be compared with some other algos
+bCompareOtherAlgos = T
+bDoKMeans = T
+bDoHierarachical = T
+# Comparing MBKM needs some other code which we can't publish
+# at the moment.
+bDoMBKM = F
+
+```
+
+We will use the UCI voting dataset.
+( Add reference. )
+
+```{r LoadingData, echo = FALSE, message = F, warning = F}
+
+# You can replace dtUCIVotingRecords with any other dataset you want to 
+# run this on. Review the LoadingData chunk and the ModelParameters chunk.
+
+# Removing missing data rows for convenience
+dtDataset = dtUCIVotingRecords[
+   !apply(
+      dtUCIVotingRecords, 
+      1,
+      function(x) { 
+         any(x == '?')
+      }
+   )
+]
+
+# rm(dtUCIVotingRecords)
+
+dtDataset = dtDataset[complete.cases(dtDataset)]
+
+setnames(
+   dtDataset,
+   make.names(colnames(dtDataset))
+)
+
+```
+
+There is some pre-processing that needs to happen on the data. This should be
+handled within the algorithm's code but for now it's separately listed outside.
+
+```{r ModelParameters, echo = FALSE, message = F, warning = F}
+
+cClassLabelFeat = 'Class'
+
+# Choose either RF or Rpart right now. If only one independent feature remains,
+# it defaults to Rpart
+cClassifier = "RF"
+
+# number of layers the tree is allowed to have
+nMaxTreeDepth = 6
+
+# Explain
+bKeepFeatureInMixAfterSplit = FALSE
+
+# Explain
+bKeepFeatureInPredAfterSplit = TRUE
+
+# Explain
+bUseOptimalChunkPerformance = TRUE
+
+# Features to use (for predicting, node splitting)
+# todo, what's the difference between vNodeCandidates and vPredictorFeatures?
+vNodeCandidates = setdiff(
+   colnames(dtDataset), 
+   cClassLabelFeat
+)
+
+vPredictorFeatures = setdiff(
+   colnames(dtDataset), 
+   cClassLabelFeat
+)
+
+# how many observations must be there for a split to be attempted
+nMinRows = max(
+   5, 
+   round(0.1 * nrow(dtDataset))
+)
+
+# Some other columns that will be required
+vKeyFeatures = 'ID'
+dtDataset[, ID := .I]
+dtDataset[, ClusteringRule := "Root"]
+dtDataset[, ParentRule := "Root"]
+dtDataset[, NodeLabel := "Root"]
+dtDataset[, Depth := 1]
+
+vRows = 1:nrow(dtDataset)
+
+# Initial node
+lRootNode = list(
+   cNodeLabel = 'Root',
+   cClusteringRule = "Root",
+   nDepth = 1,
+   vRows = vRows,
+   cParentSplitFeat = "",
+   vParentSplitVals = c(),
+   cSplitFeat = ""
+)
+
+# Mark out ordinal features
+# These can be handled better than categorical features
+vcOrdinalFeatures = c()
+
+# Listing out features and associated details
+dtFeatureChunking = data.table(
+   NodeCandidate = vNodeCandidates
+)
+
+dtFeatureChunking[, 
+   FeatureType := 'Nominal' 
+]
+
+dtFeatureChunking[
+   NodeCandidate %in% vcOrdinalFeatures, 
+   FeatureType := 'Ordinal'
+]
+
+# We can allow for chunking of ordinal features, i.e. grouping neighbouring
+# ordinal values into one bucket
+dtFeatureChunking[, 
+   Chunk := FALSE 
+]
+
+dtFeatureChunking[
+   NodeCandidate %in% vcOrdinalFeatures, 
+   Chunk := T 
+]
+dtFeatureChunking[
+   NodeCandidate %in% vcOrdinalFeatures, 
+   MinNumChunks := 2 
+]
+dtFeatureChunking[
+   NodeCandidate %in% vcOrdinalFeatures, 
+   MaxNumChunks := 3 
+]
+
+```
+
+The clustering algo can be run on this dataset using the function 
+`RecursivePartitioningTreeClustering`.
+
+```{r RunningAlgo, echo = FALSE, message = F, warning = F, results = 'hide'}
+
+lTree = RecursivePartitioningTreeClustering(
+   dtDataset = dtDataset,
+   vRows = vRows,
+   vNodeCandidates = vNodeCandidates,
+   vPredictorFeatures = vPredictorFeatures,
+   vKeyFeatures = vKeyFeatures,
+   dtFeatureChunking = dtFeatureChunking,
+   lTree = lRootNode,
+   nTreeDepth = 0,
+   nMinRows = nMinRows,
+   nMaxTreeDepth = nMaxTreeDepth,
+   cClassifier = cClassifier,
+   bKeepFeatureInMixAfterSplit = bKeepFeatureInMixAfterSplit,
+   bKeepFeatureInPredAfterSplit = bKeepFeatureInPredAfterSplit,
+   bUseOptimalChunkPerformance = bUseOptimalChunkPerformance
+)
+
+# table(dtDataset$ClusteringRule)
+# View(dtDataset)
+
+
+```
+
+# Model details
+
+Using the `AssignCluster` function, we can predict the clustering assignment
+for each observation in the dataset. 
+
+There are various other functions to help us analyse the results further. These
+functions are needed only on such demonstrations since on actual problems we 
+won't have access to the actual labels of the dataset.
+
+```{r ResultsExploration00, echo = FALSE, message = F, warning = F}
+
+if ( bDoAnalysis ) {
+
+   # ---------------------------------------------------------------------------
+
+   iNbrClasses = length(
+      unique(
+         unlist(
+            dtDataset[,
+               cClassLabelFeat, 
+               with = F
+            ]
+         )
+      )
+   )
+
+   dtClassClustering = QualityOfClustering(
+      AssignCluster(
+         lTree,
+         dtDataset
+      ),
+      cClassLabelFeat
+   )
+
+   dtNewClusteringObject = TreeStretchedToBottom(
+      lTree = lTree,
+      iParentNodeIndex = 0,
+      bStretch = T
+   )
+
+   dtNewClusteringObject = merge(
+      dtNewClusteringObject,
+      setnames(dtClassClustering[, list(
+          NodePrediction = NodeLabel[which.max(LayerCumPct)],
+          Proportion = max(LayerCumPct)
+        ), 
+      list(Node)
+      ], 'Node','NodeLabel'),
+      'NodeLabel'
+    )
+
+   ggplot(dtNewClusteringObject[Stretch == F]) +
+      geom_segment(
+         aes(
+            y = LayerNbr - 1, 
+            yend = LayerNbr, 
+            x = ParentNodeIndex, 
+            xend = NodeLabel
+         )
+      )  +
+      geom_point(
+         aes(
+            y = LayerNbr, 
+            x = NodeLabel,
+            color = NodePrediction,
+            size = Members
+         )
+      ) +
+      geom_text_repel(
+         aes(
+            y = LayerNbr, 
+            x = NodeLabel, 
+            label = paste(NodeColumnName,':',NodeColumnValue), 
+            color = NodePrediction
+         )
+      ) +
+      # geom_text_repel(aes(y = LayerNbr, x = NodeLabel, label = paste(NodeLabel,':',NodeColumnName,':',NodeColumnValue))) +
+      # scale_colour_discrete(guide = 'none') +
+      labs(
+         list(
+            title = 'The tree',
+            y = NULL
+         )
+      ) +
+      theme(
+         # axis.text.x = element_text(
+         #    angle = 90, 
+         #    hjust = 1
+         # ),
+         axis.title.y = element_blank(),
+         axis.text.y = element_blank(),
+         axis.ticks.y = element_blank(),
+         axis.title.x = element_blank(),
+         axis.text.x = element_blank(),
+         axis.ticks.x = element_blank(),
+         legend.position = 'bottom',
+         panel.grid = element_blank()
+      )
+
+}
+
+
+```
+
+```{r ResultsExploration01, echo = FALSE, message = F, warning = F}
+
+
+if ( bDoAnalysis ) {
+
+   #----------------------------------------------------------------------------
+
+   # Evaluating the clustering tree from a classification standpoint
+
+   # Create a tree summary dataset
+   # todo, default dtTreeSummary to NULL hand handle initialisation inside
+   # the function
+
+   dtTreeSummary = TraverseTreeToMeasureClassificationQuality(
+      dtTreeSummary = data.table(),
+      dtDataset = dtDataset,
+      lTree = lTree,
+      cClassLabelFeat = cClassLabelFeat
+   )
+
+   # See classification accuracy as a function of depth
+   dtClassificationAccuracyByClassDepth = GetClassificationAccuracyByClassDepth(
+      dtTreeSummary
+   )
+
+   ggplot(
+      data = dtClassificationAccuracyByClassDepth[Depth>1],
+      aes(
+         x = Depth,
+         y = NodeMajorityPc,
+         group = NodeMajorityClass,
+         colour = NodeMajorityClass
+      )
+   ) +
+      geom_line() +
+      geom_point() +
+      scale_y_continuous(labels = percent) +
+      labs(
+         list(
+            title = 'Change in clusteriing accuracy over layers',
+            caption = 'At each layer of the tree, the proportion of rows correctly assigned to a particular label. 
+            This is calculated across the effective remaining tree if you were to cut all the layers off below the specified layer, 
+            i.e. all leaf nodes upto that layer, and all non-leaf nodes in that layer.',
+            y = 'Poportion of data correctly clustered.'
+            
+         )
+      ) + 
+      theme(
+         legend.position = 'bottom'
+      )
+
+   # View(dtClassificationAccuracyByClassDepth)
+
+}
+
+```
+
+```{r ResultsExploration02, echo = FALSE, message = F, warning = F}
+
+if ( bDoAnalysis ) {
+
+   ggplot( dtClassClustering ) +
+      geom_point(aes(x = factor(Node), y = PctOfNode, color = Class, size  = Count)) +
+      facet_wrap(~Layer, scale = 'free_x', nrow = 1) +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+      scale_y_continuous(labels = percent) +
+      labs(
+         list(
+            title = 'Node accuracy',
+            caption = 'Each point is a unique node - layer - class combination.
+            Shows the proportion in the node (y) of each class (colour), and the number of members (size), across each layer.
+            Each node of a layer lies on the x axis.
+            Helps identify nodes which are not being clusterd well.',
+            y = 'Pct of node',
+            x = 'Node ID'
+         )
+      ) + 
+      theme(
+         legend.position = 'bottom'
+      )
+
+}
+
+```
+
+```{r ResultsExploration03, echo = FALSE, message = F, warning = F}
+
+if ( bDoAnalysis ) {
+
+   ggplot(dtClassClustering) +
+      geom_point(aes(x = NodeLabel, y = PctOfNode, color = Class, size  = Count)) +
+      facet_wrap(~Layer, scale = 'free_x') +
+      labs(
+         list(
+            title = 'Label accuracy',
+            caption = 'Each point is a unique node - layer - class combination.
+            Shows the proportion in the node (y) of each class (colour), and the number of members (size), across each layer.
+            The x axis is the label assigned to the node.
+            Helps identify classes which are not being clusterd well.',
+            y = 'Pct of node',
+            x = 'Label'
+         )
+      ) + 
+      scale_y_continuous(labels = percent) +
+      theme(
+         legend.position = 'bottom'
+      )
+   
+}   
+```
+
+```{r ResultsExploration04, echo = FALSE, message = F, warning = F}
+
+if ( bDoAnalysis & F ) {
+
+
+   ggplot(dtClassClustering) +
+      geom_point(aes(x = LayerCumPct, y = PctOfNode, color = Correct, size  = Count)) +
+      facet_wrap(~Layer) +
+      labs(
+         list(
+            title = 'Spread of population clustering accuracy',
+            caption = 'Each point is a unique node - layer - class combination.
+            Shows the proportion in the node (y) of each class (colour), and the number of members (size), across each layer.
+            The CDF of all the data lies along the x axis. The data is sorted by proportion in the node.
+            The least accurately clustered node-class lies on the bottom left, and the most accurately clustered node-class on the top right.
+            Helps see the spread of the accuracy of the clustering.'
+         )
+      ) + 
+      scale_y_continuous(labels = percent) +
+      theme(
+         legend.position = 'bottom'
+      )
+
+      
+}   
+```
+
+# Performance on other algorithms
+
+We will compare the algorithm with hierarchical cluster by Ward method and K-means.
+
+Elaborate on the details.
+
+```{r RunningOtherAlgos, echo = FALSE, message = F, warning = F, results = 'hide'}
+
+
+if ( bCompareOtherAlgos ) {
+
+   # ---------------------------------------------------------------------------
+   # Summarising results from this algo
+   # ---------------------------------------------------------------------------
+
+   dtResultsAlgo = data.table()
+   
+   for ( iDepth in c(2:dtTreeSummary[, max(Depth)]) ) {
+
+      # if ( ( iNbrClasses ^ (iDepth - 1) ) > 16 ) {
+      #   break
+      # }
+
+      dtDataset[, 
+         TreeCut := gsub(
+         x = NodeLabel,
+         pattern = paste0(
+            '(^',
+            paste0(
+               rep(
+               '.*?>', 
+               iDepth
+               ), 
+               collapse = ''
+            ),
+            ').*'
+         ),
+         replacement = '\\1'
+         )
+      ]
+
+
+      dtThisResult = data.table(
+         table(
+         dtDataset[, 
+            c(
+               cClassLabelFeat,
+               'TreeCut'
+            ), 
+            with = F
+         ]
+         )
+      )
+
+      setnames(
+         dtThisResult,
+         c('Class','Cluster2','Members')
+      )
+
+      dtThisResult[, Cluster := .GRP, Cluster2]
+      dtThisResult[, Cluster2 := NULL]
+
+      dtThisResult[, 
+         NbrClusters := length(unique(Cluster))
+      ]
+
+      dtResultsAlgo = rbind(
+         dtResultsAlgo,
+         dtThisResult,
+         fill = T
+      )
+
+      setDT(dtResultsAlgo)
+
+
+   }
+
+   dtResultsAlgo[, Method := 'Algo']
+
+
+
+
+   # ---------------------------------------------------------------------------
+   # Summarising results from hierarchical
+   # ---------------------------------------------------------------------------
+
+
+   dtResultsHierarachical = data.table()
+
+   if ( bDoHierarachical ) {
+
+      mDistanceMatrix = melt(
+         copy(
+            dtDataset[, 
+            vPredictorFeatures, 
+            with = F
+            ]
+         )[, 
+            SNO := .I
+         ], 
+         measure.vars = vPredictorFeatures
+      ) 
+
+      if ( T ) {
+
+         # this is slower but has lesser memory footprint.
+         # have commented the other logic out
+         mDistanceMatrixAggregated = merge(
+            mDistanceMatrix[variable == vPredictorFeatures[1]],
+            mDistanceMatrix[variable == vPredictorFeatures[1]],
+            c('variable'),
+            allow.cartesian = T
+         )[,
+            list(
+               SNO.x, SNO.y, N = 0
+            )
+         ]
+
+         for ( cPredictorFeature in vPredictorFeatures) {
+
+            # print(cPredictorFeature)
+
+            mDistanceMatrixAggregated = rbind(
+               mDistanceMatrixAggregated,
+               merge(
+                  mDistanceMatrix[variable == cPredictorFeature],
+                  mDistanceMatrix[variable == cPredictorFeature],
+                  c('variable'),
+                  allow.cartesian = T
+               )[
+                  value.x == value.y,
+                  list(
+                     SNO.x, SNO.y, N = 1
+                  )
+               ]
+            )
+
+            setDT(mDistanceMatrixAggregated)
+
+            mDistanceMatrixAggregated = mDistanceMatrixAggregated[, 
+               list( N = sum(N, na.rm = T) ), 
+               list(SNO.x, SNO.y)
+            ]
+
+         } 
+
+         mDistanceMatrix = mDistanceMatrixAggregated
+         mDistanceMatrix[,
+            N := length(vPredictorFeatures) - N
+         ]
+         rm(mDistanceMatrixAggregated)
+
+   
+      } else {
+
+         mDistanceMatrix = rbindlist(
+            lapply(
+               vPredictorFeatures,
+               function (x) {
+               # print(x)
+               merge(
+                  mDistanceMatrix[variable == x],
+                  mDistanceMatrix[variable == x],
+                  c('variable'),
+                  allow.cartesian = T
+               )[
+                  value.x == value.y,
+                  list(
+                     SNO.x, SNO.y
+                  )
+               ]
+               }
+            )
+         )
+         
+
+         mDistanceMatrix = mDistanceMatrix[, 
+            list( N = as.integer(as.character(.N)) ), 
+            list(SNO.x, SNO.y)
+         ][,
+            N := length(vPredictorFeatures) - N
+         ]
+
+      }
+
+      mDistanceMatrix = dcast(
+         mDistanceMatrix,
+         SNO.x~SNO.y,
+         value.var = 'N',
+         fun.aggregate = mean
+      )
+
+      mDistanceMatrix[is.na(mDistanceMatrix)] = 0
+
+      fPrintTable = function(
+         k,
+         vcValues,
+         Tree
+      ) {
+
+         # print(
+            table(
+            cbind(
+               vcValues, 
+               cutree(
+                  Tree, 
+                  k =k
+               )
+            )
+            )
+         # )
+
+      }
+
+      for ( cMethod in c('ward')) {
+      # for ( cMethod in c('single','complete','ward','weighted')) {
+
+         # print(cMethod)
+
+         HierarchicalModel = agnes(
+            mDistanceMatrix[, -1], 
+            diss = T,
+            method = cMethod
+         )
+
+
+         for ( i in dtResultsAlgo[, unique(NbrClusters)] ) {
+
+            # if ( i > 16 ) {
+            #   break
+            # }
+
+            dtResultsHierarachical = rbind(
+               dtResultsHierarachical,
+               data.table(fPrintTable(
+                  k = i,
+                  vcValues = dtDataset[, cClassLabelFeat, with = F][, cClassLabelFeat, with = F],
+                  Tree = HierarchicalModel
+               ))[, NbrClusters := i][, Method := paste0('H:',cMethod)],
+               fill = T
+            )
+
+         }
+
+      }
+      
+      rm(mDistanceMatrix)
+
+      setDT(dtResultsHierarachical)
+      setnames(
+         dtResultsHierarachical, 
+         c(
+            'Class',
+            'Cluster',
+            'Members',
+            'NbrClusters',
+            'Method'
+         )
+      )
+
+   }
+
+
+   # ---------------------------------------------------------------------------
+   # Summarising results from k-modes
+   # ---------------------------------------------------------------------------
+
+
+   dtResultsMBKM = data.table()
+
+   if ( bDoMBKM ) {
+
+      dtDataset[, SNO2 := .I ]
+      lIndicatorDataset = CreateIndicatorDatasetFromCategorical(
+         dtCategoricalDataset = dtDataset[, c(vPredictorFeatures, 'SNO2'), with = F],
+         vCategoricalFeatures = vPredictorFeatures,
+         vKeyFeatures = c('SNO2')
+      )
+
+      for ( i in dtResultsAlgo[, unique(NbrClusters)] ) {
+
+         # if ( i > 16 ) {
+         #   break
+         # }
+         
+         lClusteringResults = MiniBatchKModesVectorized(
+            dtClusteringDataset = lIndicatorDataset$dtIndicatorDataset, 
+            vIndicatorFeatures = lIndicatorDataset$vIndicatorFeatures, 
+            vCategoricalFeatures = lIndicatorDataset$vCategoricalFeatures, 
+            vKeyFeatures = c('SNO2'),
+            vCatNumPerFeature = lIndicatorDataset$vCatNumPerFeature,
+            nNumClusters = i, 
+            nBatchSize = nrow(dtDataset), 
+            nMaxIter = 10, 
+            bBatchUpdate=FALSE,
+            cDistanceMetric = 'hellinger', 
+            vFeatureWeights = array(1,length(lIndicatorDataset$vCategoricalFeatures)),
+            lInitCenters = list(method="multitry", centers=NULL)
+         )
+
+         qwe = MeasureDistancesFromClusterCentersVectorized(
+            dtClusteringDataset = lIndicatorDataset$dtIndicatorDataset, 
+            dtClusterCenters = lClusteringResults$vCenters, 
+            vIndicatorFeatures = lIndicatorDataset$vIndicatorFeatures,
+            vCategoricalFeatures = lIndicatorDataset$vCategoricalFeatures,
+            vKeyFeatures = lIndicatorDataset$vKeyFeatures,
+            vCatNumPerFeature = lIndicatorDataset$vCatNumPerFeature,
+            cDistanceMetric = 'hellinger', 
+            vFeatureWeights = array(1,length(lIndicatorDataset$vCategoricalFeatures)) 
+         )
+
+         # for (c in 1:length(lClusteringResults$lCenters))
+         # {
+         #   print(lClusteringResults$lCenters[[c]]$center)  
+         # }
+
+         dtResultsMBKM = rbind(
+            dtResultsMBKM,
+            data.table(
+               table(
+                  merge(
+                     dtDataset[, c('SNO2',cClassLabelFeat), with = F], 
+                     qwe$centnum, 
+                     'SNO2'
+                  )[, 
+                     c(cClassLabelFeat, 'clusternum'), 
+                     with  = F
+                  ]
+               )
+            )[, 
+               NbrClusters := i
+            ][, 
+               Method := 'MBKM'
+            ],
+            fill = T
+         )
+
+      }
+
+      setnames(
+         dtResultsMBKM, 
+         c(
+         'Class',
+         'Cluster',
+         'Members',
+         'NbrClusters',
+         'Method'
+         )
+      )
+
+   }
+
+
+
+   # ---------------------------------------------------------------------------
+   # Summarising results from k-means
+   # ---------------------------------------------------------------------------
+
+
+   dtResultsKM = data.table()
+
+   if  ( bDoKMeans ) {
+
+      dtKMDataset = dtDataset[, 
+         c(vPredictorFeatures, cClassLabelFeat), 
+         with = F
+      ]
+
+      dtKMDataset[, SNO := .I]
+
+      for ( i in seq(length(vPredictorFeatures)) ) {
+
+         # print(vPredictorFeatures[i])
+
+         if ( grepl(x = vPredictorFeatures[i], pattern = 'Ord') ) {
+
+            dtKMDataset[,
+               vPredictorFeatures[i] := as.numeric(gsub(
+                  x = get(vPredictorFeatures[i]),
+                  pattern = '\\(.*',
+                  replacement = ''
+               ))
+            ]
+
+         } else {
+
+            dtToMerge = dcast(
+               dtKMDataset[, c('SNO', vPredictorFeatures[i]), with = F], 
+               as.formula(paste0('SNO~', vPredictorFeatures[i])),
+               fun.aggregate = length,
+               value.var = vPredictorFeatures[i]
+            )
+
+            setnames(
+               dtToMerge, 
+               setdiff(colnames(dtToMerge), 'SNO'),
+               paste0(vPredictorFeatures[i],'.',setdiff(colnames(dtToMerge), 'SNO'))
+            )
+
+            dtKMDataset = merge(
+               dtKMDataset[, 
+                  !vPredictorFeatures[i], 
+                  with = F
+               ],
+               dtToMerge,
+               'SNO'
+            )
+
+         }
+
+      }
+
+      dtKMDataset[, SNO := NULL]
+
+      for ( i in dtResultsAlgo[, unique(NbrClusters)] ) {
+
+         setDT(dtKMDataset)
+         kmeansForComparison = kmeans(
+            x = dtKMDataset[, !c(cClassLabelFeat, 'Cluster'), with = F], 
+            centers = i
+         )
+
+         dtKMDataset[,
+            Cluster := cl_predict(
+               kmeansForComparison,
+               dtKMDataset[, !c(cClassLabelFeat, 'Cluster'), with = F]
+            )
+         ]
+
+         dtKMDatasetResults = dtKMDataset[,
+            list(Members = .N),
+            c('Cluster', cClassLabelFeat)
+         ]
+
+         setnames(
+            dtKMDatasetResults,
+            cClassLabelFeat, 
+            'Class'
+         )
+
+         dtResultsKM = rbind(
+            dtResultsKM,
+            dtKMDatasetResults[, 
+               NbrClusters := i
+            ][,
+               Method := 'KM'
+            ],
+            fill = T
+         )
+
+      }
+
+      setnames(
+         dtResultsKM, 
+         c(
+            'Cluster',
+            'Class',
+            'Members',
+            'NbrClusters',
+            'Method'
+         )
+      )
+
+
+
+   }
+
+}
+
+```
+
+```{r ComparingOtherAlgos00, echo = FALSE, message = F, warning = F}
+
+if ( bCompareOtherAlgos ) {
+   
+   # Comparing results from various algos
+   # ---------------------------------------------------------------------------
+
+   dtResults = data.table()
+   dtResults = rbind(dtResults, dtResultsMBKM, fill = T)
+   dtResults = rbind(dtResults, dtResultsKM, fill = T)
+   dtResults = rbind(dtResults, dtResultsHierarachical, fill = T)
+   dtResults = rbind(dtResults, dtResultsAlgo, fill = T)
+   setDT(dtResults)
+   dtResults[, Cluster := as.integer(Cluster)]
+
+   dtResults = merge(
+      dtResults,
+      setnames(
+         dtResults[,
+            expand.grid(
+               min(Cluster):max(Cluster),
+               unique(Class)
+            ), 
+            list(
+               NbrClusters,
+               Method
+            )
+         ],
+         c('Var1','Var2'),
+         c('Cluster','Class')
+      ),
+      by = c('Method','NbrClusters','Cluster','Class'),
+      all = T
+   )
+
+   dtResults[is.na(Members), Members := 0]
+
+   setkey(
+      dtResults, 
+      Method, NbrClusters, Cluster, Class
+   )
+
+   dtResults[, 
+      Members_pct := Members / sum(Members), 
+      list(Method, NbrClusters, Cluster)
+   ]
+
+   dtResults[, 
+      ClusterMembers := max(cumsum(Members)), 
+      list(Method, NbrClusters, Cluster)
+   ] 
+
+   dtResults[, 
+      MembersPrevious_pct := c(0,head(Members_pct, -1)), 
+      list(Method, NbrClusters, Cluster)
+   ]
+
+   setkey(
+      dtResults, 
+      Method, NbrClusters, Cluster
+   )
+
+   dtResults[, 
+      ClusterMembersPrevious := c(0,head(ClusterMembers, -1)), 
+      list(Method, NbrClusters, Cluster, Class)
+   ]
+
+   dtResults[, 
+      AssignedClass := Class[which.max(Members)], 
+      list(Method, NbrClusters, Cluster)
+   ]
+
+}
+```
+
+
+```{r ComparingOtherAlgos01, echo = FALSE, message = F, warning = F}
+
+if ( bCompareOtherAlgos ) {
+   
+   # datatable(
+   #    dcast(
+   #       dtResults[, 
+   #          list(
+   #             Propotion_pct = sum(Members_pct)
+   #          ), 
+   #          list(
+   #             Method,
+   #             CorrectlyClustered = AssignedClass == Class, 
+   #             NbrClusters, 
+   #             Cluster
+   #          )
+   #       ][
+   #          CorrectlyClustered == F
+   #       ][, 
+   #          list(
+   #             MeanPropotion_pct = mean(Propotion_pct)
+   #          ), 
+   #          list( 
+   #             Method, 
+   #             CorrectlyClustered, 
+   #             NbrClusters
+   #          )
+   #       ][, 
+   #          # Dataset := cRunName
+   #       ], 
+   #       # Dataset + NbrClusters ~ Method, 
+   #       NbrClusters ~ Method, 
+   #       value.var = 'MeanPropotion_pct',
+   #       fun.aggregate = function( x ) { paste( round(x * 100), '%' )}
+   #       
+   #    ),
+   #    rownames = F, 
+   #    caption = 'Mean error across each cluster'
+   # )
+   
+   ggplot(
+      dtResults[, 
+         list(
+            Propotion_pct = sum(Members_pct)
+         ), 
+         list(
+            Method,
+            CorrectlyClustered = AssignedClass == Class, 
+            NbrClusters, 
+            Cluster
+         )
+      ][
+         CorrectlyClustered == F
+      ][, 
+         list(
+            Misattribution_pct = mean(Propotion_pct)
+         ), 
+         list( 
+            Method, 
+            CorrectlyClustered, 
+            NbrClusters
+         )
+      ]
+   ) + 
+      geom_bar(
+         aes(
+            x = Method,
+            y = Misattribution_pct
+         ), 
+         stat = 'identity'
+      ) + 
+      facet_grid(~NbrClusters) +
+      scale_y_continuous(labels = percent) +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+      labs(
+         list(
+            title = paste0('Average % data misattributed across clusters')
+         )
+      )
+   
+   
+}
+```
+
+
+```{r ComparingOtherAlgos02, echo = FALSE, message = F, warning = F}
+
+if ( bCompareOtherAlgos ) {
+   
+   ggplot(
+      dtResults[, 
+         list(
+            Misattribution_pct = sum(Members[AssignedClass != Class]) / 
+               sum(Members)
+         ), 
+         list(
+            Method, 
+            NbrClusters
+         )
+      ]
+   ) + 
+      geom_bar(
+         aes(
+            x = Method,
+            y = Misattribution_pct
+         ), 
+         stat = 'identity'
+      ) + 
+      facet_grid(~NbrClusters) +
+      scale_y_continuous(labels = percent) +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+      labs(
+         list(
+            title = paste0('Total % data misattributed')
+         )
+      )
+   
+}
+```
+
+
+```{r ComparingOtherAlgos03, echo = FALSE, message = F, warning = F}
+
+if ( bCompareOtherAlgos ) {
+   
+
+   ggplot(dtResults) +
+      geom_text(aes(x = Class, y = Cluster, label = paste0(Members, ' (', round(100*Members_pct,0), '%)'), color = Class)) + 
+      facet_grid(Method~NbrClusters) + 
+      scale_colour_discrete(guide = 'none') +
+      scale_y_continuous(
+         breaks = seq(max(dtResults[, Cluster])),
+         limits = c(min(dtResults[,Cluster])-1, max(dtResults[,Cluster])+1 )
+      ) +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+      labs(
+         list(
+            title = paste0('Misattribution% by cluster')
+         )
+      )
+
+}
+```
+
+```{r ComparingOtherAlgos06, echo = FALSE, message = F, warning = F}
+
+if ( bCompareOtherAlgos ) {
+   
+   ggplot(dtResults) + 
+      geom_bar(aes(x = Cluster, y = Members, fill = Class), position = 'stack', stat = 'identity') + 
+      coord_flip() +
+      facet_grid(Method~NbrClusters)+
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+      labs(
+         list(
+            title = paste0('Count by cluster')
+         )
+      )
+
+
+}
+```
+
+```{r ComparingOtherAlgos07, echo = FALSE, message = F, warning = F}
+
+if ( bCompareOtherAlgos & F ) {
+   
+   # ---------------------------------------------------------------------------
+   # Tabulating for paper
+   # ---------------------------------------------------------------------------
+
+   for ( iDepth in c(2:4) ) {
+
+      dtDataset[, 
+         TreeCut := gsub(
+            x = NodeLabel,
+            pattern = paste0(
+               '(^',
+               paste0(
+                  rep(
+                     '.*?>', 
+                     iDepth
+                  ), 
+                  collapse = ''
+               ),
+               ').*'
+            ),
+            replacement = '\\1'
+         )
+      ]
+
+      # print(
+      #    table(
+      #       dtDataset[, 
+      #          c(
+      #             cClassLabelFeat,
+      #             'TreeCut'
+      #          ), 
+      #          with = F
+      #       ]
+      #    )
+      # )
+
+      qwe = setnames(
+         data.table(
+            fPrintTable(
+               k = iDepth,
+               vcValues = dtDataset[, cClassLabelFeat, with = F],
+               Tree = HierarchicalModel
+               )
+         ),
+         c('Class','Cluster','Members')
+      )
+
+      qwe[, Cluster := as.integer(Cluster)]
+      qwe = merge(
+         qwe,
+         qwe[, list(Cluster = min(qwe[,Cluster]):max(qwe[,Cluster])), Class],
+         by = c('Cluster','Class'),
+         all = T
+      )
+      qwe[is.na(Members), Members := 0]
+
+      setkey(qwe, Cluster, Class)
+      qwe[, Members_pct := Members / sum(Members), Cluster]
+      qwe[, ClusterMembers := cumsum(Members)][, ClusterMembers := max(ClusterMembers), Cluster] 
+      qwe[, MembersPrevious_pct := c(0,head(Members_pct, -1)), Cluster]
+      setkey(qwe, Class, Cluster)
+      qwe[, ClusterMembersPrevious := c(0,head(ClusterMembers, -1)), Class]
+
+
+
+      grid.arrange(
+         ggplot(qwe) +
+            geom_text(aes(x = Class, y = Cluster, label = paste0(Members, ' (', round(100*Members_pct,0), '%)'), color = Class)),
+         ggplot(qwe) + 
+            geom_bar(aes(x = Cluster, y = Members, fill = Class), color = 'black', stat = 'identity') + 
+            coord_flip(),
+         ggplot(qwe) + 
+            geom_bar(aes(x = Cluster, y = Members_pct, fill = Class), color = 'black', stat = 'identity') + 
+            coord_flip(),
+         ggplot(qwe) + 
+            geom_rect(aes(ymin = ClusterMembers, ymax = ClusterMembersPrevious, xmin = MembersPrevious_pct, xmax = Members_pct + MembersPrevious_pct, fill = Class), color = 'black') +
+            ylab('Composition of total') + xlab('% Composition of cluster'),
+         name = paste('qweqwe', iDepth)
+      )
+
+      dtDataset[, TreeCut := NULL]
+
+   }
+
+
+}

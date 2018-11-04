@@ -1,0 +1,23 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1541319283602.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "326069845",
+    "id" : "C3B4865B",
+    "lastKnownWriteTime" : 1541319595,
+    "last_content_update" : 1541320368262,
+    "path" : "/media/ask/Data/Personal/Projects/Personal/ClusteringAlgo/CURD/vignettes/CURD.Rmd",
+    "project_path" : "vignettes/CURD.Rmd",
+    "properties" : {
+        "cursorPosition" : "194,0",
+        "last_setup_crc32" : "",
+        "scrollLine" : "190"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_markdown"
+}
