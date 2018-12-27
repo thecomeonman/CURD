@@ -83,13 +83,13 @@ further. These functions are needed only on such demonstrations since on
 actual problems we won't have access to the actual labels of the
 dataset.
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ResultsExploration00-1.png)
+![](/CURD_files/figure-markdown_strict/ResultsExploration00-1.png)
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ResultsExploration01-1.png)
+![](/CURD_files/figure-markdown_strict/ResultsExploration01-1.png)
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ResultsExploration02-1.png)
+![](/CURD_files/figure-markdown_strict/ResultsExploration02-1.png)
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ResultsExploration03-1.png)
+![](/CURD_files/figure-markdown_strict/ResultsExploration03-1.png)
 
 Performance on other algorithms
 ===============================
@@ -99,10 +99,10 @@ and K-means.
 
 Elaborate on the details.
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ComparingOtherAlgos01-1.png)
+![](/CURD_files/figure-markdown_strict/ComparingOtherAlgos01-1.png)
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ComparingOtherAlgos02-1.png)
+![](/CURD_files/figure-markdown_strict/ComparingOtherAlgos02-1.png)
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ComparingOtherAlgos03-1.png)
+![](/CURD_files/figure-markdown_strict/ComparingOtherAlgos03-1.png)
 
-![](/tmp/RtmpCaVQKp/preview-348a770c892d.dir/CURD_files/figure-markdown_strict/ComparingOtherAlgos06-1.png)
+![](/CURD_files/figure-markdown_strict/ComparingOtherAlgos06-1.png)
